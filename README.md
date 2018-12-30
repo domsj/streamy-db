@@ -12,7 +12,7 @@ This is only a prototype / proof of concept.
 
 The flink code is a bit further along than the beam code.
 
-A blog post explaining the contents of the repo is [available](https://domsj.info/2018/12/29/introducing-streamy-db.html).
+A blog post explaining the contents of the repo is [available](https://domsj.info/2018/12/30/introducing-streamy-db.html).
 
 As you can probably tell, I'm not used to organising scala code bases.
 So I hereby do a warm request towards people to improve on that.
