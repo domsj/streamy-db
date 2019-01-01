@@ -4,8 +4,8 @@ version := "0.1"
 
 scalaVersion := "2.12.8"
 
-val scioVersion = "0.6.1"
-val beamVersion = "2.6.0"
+val scioVersion = "0.7.0-beta2"
+val beamVersion = "2.8.0"
 val flinkVersion = "1.7.0"
 val akkaVersion = "2.5.19"
 
@@ -23,5 +23,9 @@ libraryDependencies ++= Seq(
   "org.apache.flink" %% "flink-connector-kafka-0.11" % flinkVersion,
 
   "org.apache.beam" % "beam-runners-direct-java" % beamVersion,
+  "org.apache.beam" % "beam-sdks-java-io-kafka" % beamVersion,
   "com.spotify" %% "scio-core" % scioVersion,
+//  "com.spotify" %% "scio-extra" % scioVersion,
+//  "org.apache.beam" % "beam-sdks-java-extensions-kryo" % beamVersion,
+//  "org.apache.beam" % "beam-sdks-java-extensions-euphoria" % beamVersion,
 )

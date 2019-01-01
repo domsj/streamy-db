@@ -20,6 +20,7 @@ package domsj.streamy.db.beam
 import com.spotify.scio.ContextAndArgs
 import com.spotify.scio.values.WindowOptions
 import domsj.streamy.db._
+import org.apache.beam.sdk.io.kafka.KafkaIO
 import org.apache.beam.sdk.state._
 import org.apache.beam.sdk.transforms.DoFn
 import org.apache.beam.sdk.transforms.DoFn.{OnTimer, ProcessElement, StateId, TimerId}
@@ -31,7 +32,10 @@ import org.joda.time.Instant
 object StreamyDb {
 
   class KeyedEventTimeSorter[K, V] extends DoFn[KV[K, V], KV[K, List[V]]] {
-    @StateId("elements") private val elementsSpec = StateSpecs.map[Instant, KV[K, List[V]]]()
+    @StateId("elements") private val elementsSpec = StateSpecs.map[Instant, KV[K, List[V]]](
+//      KryoCoder.of[Instant](),
+//      KryoCoder.of[KV[K, List[V]]]()
+    )
     @TimerId("timer") private val timerSpec =  TimerSpecs.timer(TimeDomain.EVENT_TIME)
 
     @ProcessElement
@@ -161,19 +165,31 @@ object StreamyDb {
   def main(cmdlineArgs: Array[String]): Unit = {
     val (sc, args) = ContextAndArgs(cmdlineArgs)
 
-    val transactionsInput = sc.textFile("path")
-      .map((str: String) => Transaction(str, Nil, Nil))
-      .withGlobalWindow(
-        WindowOptions(
-          timestampCombiner = TimestampCombiner.LATEST,
-          accumulationMode = AccumulationMode.DISCARDING_FIRED_PANES,
-          // trigger = Trigger.AfterAny.newBuilder().build()
+
+
+    val transactionsInput =
+      sc.customInput("transactions-input", makeKafkaIOWithLogAppendTime(transactionInputsTopic))
+        .map(v => upickle.default.read[Transaction](v.getValue))
+        .withGlobalWindow(
+          WindowOptions(
+            timestampCombiner = TimestampCombiner.LATEST,
+            accumulationMode = AccumulationMode.DISCARDING_FIRED_PANES,
+            // trigger = Trigger.AfterAny.newBuilder().build()
+          )
         )
-      )
 
     val keyTransactionResults =
-      sc.textFile("transactionResults")
-        .map(s => KeyTransactionResult(s, s, None).asInstanceOf[KeyProcessorMessage])
+      sc.customInput("transaction-results-input", makeKafkaIOWithLogAppendTime(transactionResultsTopic))
+        .map(v => upickle.default.read[TransactionResult](v.getValue))
+        .flatMap(tr =>
+          tr.transaction.updates.map(kvo =>
+            KeyTransactionResult(
+              tr.transaction.transactionId,
+              kvo.key,
+              if (tr.succeeded) { Some(kvo.valueOption) }  else { None })
+              .asInstanceOf[KeyProcessorMessage]
+          )
+        )
         .keyBy(tr => tr.key)
 
     val sortedLockAndReadRequests = transactionsInput
@@ -206,7 +222,9 @@ object StreamyDb {
       .keyBy(_.transactionId)
       .applyPerKeyDoFn(new TransactionProcessor())
 
-    // TODO output transactionResults to kafka sink
+    transactionResults
+      .map(tr => KV.of(tr._1, upickle.default.write(tr._2)))
+      .saveAsCustomOutput("transaction-results-output", KafkaIO.write())
 
     ()
   }
