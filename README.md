@@ -1,4 +1,4 @@
-Streamy-db
+Streamy-db   ![](https://travis-ci.com/domsj/streamy-db.svg?branch=master)
 --
 
 Streamy-db is a deterministic streaming database implementation.
