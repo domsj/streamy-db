@@ -33,8 +33,8 @@ object StreamyDb {
 
   class KeyedEventTimeSorter[K, V] extends DoFn[KV[K, V], KV[K, List[V]]] {
     @StateId("elements") private val elementsSpec = StateSpecs.map[Instant, KV[K, List[V]]](
-//      KryoCoder.of[Instant](),
-//      KryoCoder.of[KV[K, List[V]]]()
+      //      KryoCoder.of[Instant](),
+      //      KryoCoder.of[KV[K, List[V]]]()
     )
     @TimerId("timer") private val timerSpec =  TimerSpecs.timer(TimeDomain.EVENT_TIME)
 
