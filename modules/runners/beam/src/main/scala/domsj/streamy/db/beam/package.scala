@@ -16,7 +16,6 @@ package object beam {
       .withValueDeserializer(classOf[StringDeserializer])
       .withBootstrapServers("localhost:9092")
       .withTopic(topic)
-      //.withLogAppendTime() <- default beam logAppendTime is buggy for our purposes
       .withTimestampPolicyFactory(new TimestampPolicyFactory[String, String] {
       override def createTimestampPolicy(tp: TopicPartition,
                                          previousWatermark: Optional[Instant]
@@ -24,7 +23,7 @@ package object beam {
 
         new TimestampPolicy[String, String] {
 
-          var currentWaterMark = previousWatermark
+          private var currentWaterMark = previousWatermark.orElse(new Instant(0))
 
           override def getTimestampForRecord(ctx: TimestampPolicy.PartitionContext,
                                              record: KafkaRecord[String, String]): Instant = {
@@ -33,13 +32,12 @@ package object beam {
               throw new IllegalStateException("Wrong kafka record timestamp type. Expected LOG_APPEND_TIME but got %s instead".format(record.getTimestampType))
             }
 
-            val result = new Instant(record.getTimestamp)
-            currentWaterMark = Optional.of(result)
-            result
+            currentWaterMark = new Instant(record.getTimestamp)
+            currentWaterMark
           }
 
           override def getWatermark(ctx: TimestampPolicy.PartitionContext): Instant = {
-            currentWaterMark.orElseThrow(() => new IllegalStateException("no watermark available yet?!?"))
+            currentWaterMark
           }
         }
       }

@@ -18,6 +18,7 @@
 package domsj.streamy.db.beam
 
 import com.spotify.scio.ContextAndArgs
+import com.spotify.scio.coders._
 import com.spotify.scio.values.WindowOptions
 import domsj.streamy.db._
 import org.apache.beam.sdk.io.kafka.KafkaIO
@@ -27,14 +28,15 @@ import org.apache.beam.sdk.transforms.DoFn.{OnTimer, ProcessElement, StateId, Ti
 import org.apache.beam.sdk.transforms.windowing.TimestampCombiner
 import org.apache.beam.sdk.values.KV
 import org.apache.beam.sdk.values.WindowingStrategy.AccumulationMode
+import org.apache.kafka.common.serialization.StringSerializer
 import org.joda.time.Instant
 
 object StreamyDb {
 
-  class KeyedEventTimeSorter[K, V] extends DoFn[KV[K, V], KV[K, List[V]]] {
+  class KeyedEventTimeSorter[K : Coder, V : Coder] extends DoFn[KV[K, V], KV[K, List[V]]] {
     @StateId("elements") private val elementsSpec = StateSpecs.map[Instant, KV[K, List[V]]](
-      //      KryoCoder.of[Instant](),
-      //      KryoCoder.of[KV[K, List[V]]]()
+          CoderMaterializer.beamWithDefault(Coder[Instant]),
+          CoderMaterializer.beamWithDefault(Coder[KV[K, List[V]]])
     )
     @TimerId("timer") private val timerSpec =  TimerSpecs.timer(TimeDomain.EVENT_TIME)
 
@@ -125,9 +127,9 @@ object StreamyDb {
   }
 
   class TransactionProcessor extends DoFn[KV[TransactionId, TransactionProcessorMessage], KV[TransactionId, TransactionResult]] {
-    @StateId("transaction") private val transactionSpec = StateSpecs.value[Transaction]()
+    @StateId("transaction") private val transactionSpec = StateSpecs.value[Transaction](CoderMaterializer.beamWithDefault(Coder[Transaction]))
     @StateId("read-results") private val readResultsSpec = StateSpecs.map[Key, ValueOption]()
-    @StateId("read-results-count") private val readResultsCountSpec = StateSpecs.value[Int]()
+    @StateId("read-results-count") private val readResultsCountSpec = StateSpecs.value[Int](CoderMaterializer.beamWithDefault(Coder[Int]))
 
     @ProcessElement
     def processElement(context: ProcessContext,
@@ -166,10 +168,9 @@ object StreamyDb {
     val (sc, args) = ContextAndArgs(cmdlineArgs)
 
 
-
     val transactionsInput =
       sc.customInput("transactions-input", makeKafkaIOWithLogAppendTime(transactionInputsTopic))
-        .map(v => upickle.default.read[Transaction](v.getValue))
+        .map(v => upickle.default.read[List[Transaction]](v.getValue))
         .withGlobalWindow(
           WindowOptions(
             timestampCombiner = TimestampCombiner.LATEST,
@@ -177,6 +178,7 @@ object StreamyDb {
             // trigger = Trigger.AfterAny.newBuilder().build()
           )
         )
+      .flatMap(identity)
 
     val keyTransactionResults =
       sc.customInput("transaction-results-input", makeKafkaIOWithLogAppendTime(transactionResultsTopic))
@@ -222,11 +224,19 @@ object StreamyDb {
       .keyBy(_.transactionId)
       .applyPerKeyDoFn(new TransactionProcessor())
 
+    val kafkaOut =
+      KafkaIO
+        .write[TransactionId, String]()
+        .withBootstrapServers("localhost:9092")
+        .withTopic(transactionResultsTopic)
+        .withKeySerializer(classOf[StringSerializer])
+        .withValueSerializer(classOf[StringSerializer])
+
     transactionResults
       .map(tr => KV.of(tr._1, upickle.default.write(tr._2)))
-      .saveAsCustomOutput("transaction-results-output", KafkaIO.write())
+      .saveAsCustomOutput("transaction-results-output", kafkaOut)
 
-    ()
+    sc.pipeline.run().waitUntilFinish()
   }
 
 }
