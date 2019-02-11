@@ -24,9 +24,9 @@ import org.apache.flink.api.common.state.{MapState, MapStateDescriptor, ValueSta
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.runtime.state.StateBackend
 import org.apache.flink.runtime.state.memory.MemoryStateBackend
-import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
-import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, createTypeInformation}
+import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment, createTypeInformation}
+import org.apache.flink.streaming.api.{CheckpointingMode, TimeCharacteristic}
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer011
 import org.apache.flink.util.Collector
 
@@ -177,7 +177,7 @@ object StreamyDb {
   def main(cmdLineArgs: Array[String]): Unit = {
     val environment = StreamExecutionEnvironment.getExecutionEnvironment
     environment.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
-    environment.enableCheckpointing(5000)
+    environment.enableCheckpointing(5000, CheckpointingMode.EXACTLY_ONCE, true)
     environment.setStateBackend(new MemoryStateBackend().asInstanceOf[StateBackend])
 
     val kafkaProperties = makeKafkaProperties()
@@ -185,20 +185,6 @@ object StreamyDb {
     val transactionInputs =
       streamFromKafka(environment, transactionInputsTopic)
         .flatMap(s => upickle.default.read[List[Transaction]](s))
-
-    val keyTransactionResults =
-      streamFromKafka(environment, transactionResultsTopic)
-        .map(s => upickle.default.read[TransactionResult](s))
-        .flatMap(tr =>
-          tr.transaction.updates.map(kvo =>
-            KeyTransactionResult(
-              tr.transaction.transactionId,
-              kvo.key,
-              if (tr.succeeded) { Some(kvo.valueOption) }  else { None })
-              .asInstanceOf[KeyProcessorMessage]
-          )
-        )
-
 
     val sortedLockAndReadRequests = transactionInputs
       .flatMap(t => {
@@ -216,19 +202,38 @@ object StreamyDb {
 
     sortedLockAndReadRequests.print("sortedLockAndReadRequests")
 
-    val keyProcessorMessages = sortedLockAndReadRequests.union(keyTransactionResults)
+    val transactionResults = sortedLockAndReadRequests.iterate(
+      (keyProcessorMessages: DataStream[KeyProcessorMessage]) => {
 
-    val readResults = keyProcessorMessages
-      .keyBy(_.key)
-      .process(new KeyTransactionProcessor())
+        val readResults = keyProcessorMessages
+          .keyBy(_.key)
+          .process(new KeyTransactionProcessor())
 
-    readResults.print("readResults")
+        readResults.print("readResults")
 
-    val transactionResults =
-      readResults.map(_.asInstanceOf[TransactionProcessorMessage])
-        .union(transactionInputs.map(_.asInstanceOf[TransactionProcessorMessage]))
-        .keyBy(_.transactionId)
-        .process(new TransactionProcessor())
+        val transactionResults =
+          readResults.map(_.asInstanceOf[TransactionProcessorMessage])
+            .union(transactionInputs.map(_.asInstanceOf[TransactionProcessorMessage]))
+            .keyBy(_.transactionId)
+            .process(new TransactionProcessor())
+
+        val keyTransactionResults = transactionResults
+          .flatMap(tr =>
+            tr.transaction.updates.map(kvo =>
+              KeyTransactionResult(
+                tr.transaction.transactionId,
+                kvo.key,
+                if (tr.succeeded) {
+                  Some(kvo.valueOption)
+                } else {
+                  None
+                })
+                .asInstanceOf[KeyProcessorMessage]
+            )
+          )
+
+        (keyTransactionResults, transactionResults)
+    })
 
     transactionResults
       .map(tr => upickle.default.write(tr))
